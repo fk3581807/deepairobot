@@ -3,8 +3,9 @@ import requests
 from bs4 import BeautifulSoup
 import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from flask import Flask, request  # No use of Flask server in this case; just for type hinting
+from flask import Flask, request
+
+app = Flask(__name__)
 
 # Constants
 SHAREUS_API_KEY = os.environ.get("SHAREUS_API_KEY")  # Use environment variables
@@ -16,10 +17,8 @@ def shorten_url(long_url: str) -> str:
     try:
         response = requests.get(api_url)
         response.raise_for_status()
-        shortened_url = response.text.strip()
-        return shortened_url if shortened_url else long_url
-    except requests.exceptions.RequestException as e:
-        print(f"Error shortening URL: {e}")
+        return response.text.strip() if response.text.strip() else long_url
+    except requests.exceptions.RequestException:
         return long_url
 
 def clean_title(title: str) -> str:
@@ -33,7 +32,7 @@ def search_site(keyword: str) -> list:
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
         results = soup.find_all('a', class_='ml-mask jt')
-
+        
         result_texts = []
         for result in results:
             title = result.find('h2').get_text().strip()
@@ -42,10 +41,9 @@ def search_site(keyword: str) -> list:
                 url = result['href']
                 result_texts.append((cleaned_title, url))
         
-        return result_texts[:7]  # Limit to the first 7 results
+        return result_texts[:7]
     
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching results: {e}")
+    except requests.exceptions.RequestException:
         return []
 
 def get_download_links(movie_url: str) -> str:
@@ -65,34 +63,28 @@ def get_download_links(movie_url: str) -> str:
         
         return "\n".join(download_links) if download_links else "No download links found."
     
-    except requests.exceptions.RequestException as e:
-        return f"Error fetching download links: {e}"
+    except requests.exceptions.RequestException:
+        return "Error fetching download links."
 
-async def handle_telegram_request(request):
-    # Extract the body of the request
-    if request.method != "POST":
-        return "Method not allowed", 405
-    
+@app.route('/api/telegram_bot', methods=['POST'])
+def telegram_bot():
     update = request.get_json()
     if not update or 'message' not in update:
         return "Invalid request", 400
-
-    # Handle the Telegram Update
-    keyword = update['message']['text'].strip()
+    
     chat_id = update['message']['chat']['id']
+    keyword = update['message']['text'].strip()
     
     search_results = search_site(keyword)
+    
     if search_results:
         buttons = [[InlineKeyboardButton(title, callback_data=str(idx))] for idx, (title, _) in enumerate(search_results)]
         reply_markup = InlineKeyboardMarkup(buttons)
-        
         text = "Select a movie to get the download links:"
     else:
         text = "No results found. Please try again."
     
-    # Send a message back to Telegram
     send_message(chat_id, text, reply_markup if search_results else None)
-
     return "OK", 200
 
 def send_message(chat_id, text, reply_markup=None):
@@ -104,9 +96,5 @@ def send_message(chat_id, text, reply_markup=None):
     }
     requests.post(url, json=payload)
 
-# Define your Vercel function
-def telegram_bot(req):
-    return handle_telegram_request(req)
-
 if __name__ == '__main__':
-    telegram_bot()
+    app.run()
